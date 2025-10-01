@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>DragonCursor Quest</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root{
+      --bg:#111;
+      --fuchsia:#d946ef;
+      --lime:#84cc16;
+    }
+    html,body{
+      margin:0;
+      height:100%;
+      overflow:hidden;
+      background:var(--bg);
+      cursor:none;
+      font-family:system-ui, sans-serif;
+    }
+    #dragon{
+      position:fixed;
+      top:0;left:0;
+      width:80px;height:80px;
+      pointer-events:none;
+      z-index:9999;
+      transform-origin:40px 40px;
+      transition:transform .05s linear;
+    }
+    .gem,.hazard,.powerup{
+      position:absolute;
+      border-radius:50%;
+      pointer-events:none;
+    }
+    .gem{
+      width:20px;height:20px;
+      background:var(--fuchsia);
+      box-shadow:0 0 8px var(--fuchsia);
+    }
+    .hazard{
+      width:24px;height:24px;
+      background:var(--lime);
+      box-shadow:0 0 8px var(--lime);
+    }
+    .powerup{
+      width:26px;height:26px;
+      background:#fff;
+      box-shadow:0 0 10px #fff;
+    }
+    #hud{
+      position:fixed;
+      top:10px;left:10px;
+      color:#fff;
+      font-size:16px;
+      z-index:10000;
+    }
+    #pause{
+      position:fixed;
+      inset:0;
+      background:rgba(0,0,0,.7);
+      color:#fff;
+      display:none;
+      place-items:center;
+      font-size:2rem;
+      z-index:10001;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div>Score: <span id="score">0</span></div>
+    <div>Health: <span id="health">❤️❤️❤️</span></div>
+    <div>Level: <span id="level">1</span></div>
+  </div>
+  <div id="pause">PAUSED<br><small>Press P or ESC to resume</small></div>
+
+  <!-- Inline SVG Dragon -->
+  <svg id="dragon" viewBox="0 0 100 100">
+    <g id="dragonGroup">
+      <!-- Body -->
+      <ellipse cx="50" cy="50" rx="25" ry="15" fill="#d946ef"/>
+      <!-- Wings -->
+      <path id="wingL" d="M25 50 Q10 30 5 50" stroke="#84cc16" stroke-width="4" fill="none"/>
+      <path id="wingR" d="M75 50 Q90 30 95 50" stroke="#84cc16" stroke-width="4" fill="none"/>
+      <!-- Eyes -->
+      <circle cx="40" cy="45" r="4" fill="#fff"/>
+      <circle cx="60" cy="45" r="4" fill="#fff"/>
+      <!-- Tail -->
+      <path id="tail" d="M75 50 Q90 55 95 45" stroke="#d946ef" stroke-width="4" fill="none"/>
+    </g>
+  </svg>
+
+  <script>
+    // --- CONFIG ---
+    const config={
+      maxGems:15,
+      maxHazards:8,
+      maxPowerups:3,
+      gemInterval:1200,
+      hazardInterval:2200,
+      powerupInterval:20000,
+      levelUpScore:100
+    };
+
+    // --- STATE ---
+    let state={
+      dragon:{x:innerWidth/2,y:innerHeight/2, vx:0,vy:0},
+      mouse:{x:innerWidth/2,y:innerHeight/2},
+      gems:[],
+      hazards:[],
+      powerups:[],
+      score:0,
+      health:3,
+      level:1,
+      paused:false,
+      shield:false,
+      magnet:false,
+      mega:false,
+      idle:false,
+      idleTimer:0
+    };
+
+    // --- DOM ---
+    const dragon=document.getElementById('dragon');
+    const scoreEl=document.getElementById('score');
+    const healthEl=document.getElementById('health');
+    const levelEl=document.getElementById('level');
+    const pauseEl=document.getElementById('pause');
+
+    // --- UTILS ---
+    const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+    const rand=(min,max)=>Math.random()*(max-min)+min;
+
+    // --- AUDIO ---
+    const ctx=new(window.AudioContext||webkitAudioContext)();
+    const playTone=(freq,dur=.1)=>{
+      const osc=ctx.createOscillator();
+      osc.type='sine';
+      osc.frequency.value=freq;
+      osc.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime+dur);
+    };
+
+    // --- SPAWNER ---
+    const spawnGem=()=>{
+      if(state.gems.length>=config.maxGems) return;
+      const gem=document.createElement('div');
+      gem.className='gem';
+      gem.style.left=rand(0,innerWidth-20)+'px';
+      gem.style.top=innerHeight+'px';
+      gem.dataset.vx=rand(-.5,.5);
+      gem.dataset.vy=-rand(1,2);
+      document.body.appendChild(gem);
+      state.gems.push(gem);
+    };
+    const spawnHazard=()=>{
+      if(state.hazards.length>=config.maxHazards) return;
+      const haz=document.createElement('div');
+      haz.className='hazard';
+      haz.style.left=rand(0,innerWidth-24)+'px';
+      haz.style.top=rand(0,innerHeight-24)+'px';
+      haz.dataset.vx=rand(-2,2);
+      haz.dataset.vy=rand(-2,2);
+      document.body.appendChild(haz);
+      state.hazards.push(haz);
+    };
+    const spawnPowerup=()=>{
+      if(state.powerups.length>=config.maxPowerups) return;
+      const pow=document.createElement('div');
+      pow.className='powerup';
+      pow.style.left=rand(0,innerWidth-26)+'px';
+      pow.style.top=rand(0,innerHeight-26)+'px';
+      document.body.appendChild(pow);
+      state.powerups.push(pow);
+    };
+
+    // --- ANIMATION LOOP ---
+    const update=()=>{
+      if(state.paused) return requestAnimationFrame(update);
+
+      // Dragon physics
+      const dx=state.mouse.x-state.dragon.x;
+      const dy=state.mouse.y-state.dragon.y;
+      state.dragon.vx+=dx*0.05;
+      state.dragon.vy+=dy*0.05;
+      state.dragon.vx*=0.9;
+      state.dragon.vy*=0.9;
+      state.dragon.x+=state.dragon.vx;
+      state.dragon.y+=state.dragon.vy;
+
+      // Idle bob
+      if(Math.abs(dx)<2 && Math.abs(dy)<2){
+        state.idleTimer++;
+        if(state.idleTimer>60) state.idle=true;
+      }else{
+        state.idle=false;
+        state.idleTimer=0;
+      }
+      const bob=state.idle?Math.sin(Date.now()/300)*2:0;
+
+      // Position dragon
+      dragon.style.transform=`translate(${state.dragon.x-40}px,${state.dragon.y-40+bob}px) rotate(${Math.atan2(state.dragon.vy,state.dragon.vx)}rad) scale(${state.mega?1.5:1})`;
+
+      // Wing flap speed
+      const speed=Math.hypot(state.dragon.vx,state.dragon.vy);
+      const flap=Math.min(8,2+speed/10);
+      dragon.querySelector('#wingL').setAttribute('d',`M25 50 Q${10+Math.sin(Date.now()/100*flap)*5} ${30+Math.sin(Date.now()/100*flap)*5} 5 50`);
+      dragon.querySelector('#wingR').setAttribute('d',`M75 50 Q${90-Math.sin(Date.now()/100*flap)*5} ${30+Math.sin(Date.now()/100*flap)*5} 95 50`);
+
+      // Move gems
+      state.gems.forEach((g,i)=>{
+        const x=parseFloat(g.style.left)+parseFloat(g.dataset.vx);
+        const y=parseFloat(g.style.top)+parseFloat(g.dataset.vy);
+        g.style.left=x+'px';
+        g.style.top=y+'px';
+        if(y<-50) g.remove(), state.gems.splice(i,1);
+        if(dist(state.dragon,{x:x+10,y:y+10})<20){
+          g.remove();
+          state.gems.splice(i,1);
+          state.score+=state.mega?20:10;
+          playTone(800);
+          if(state.score>=state.level*config.levelUpScore){
+            state.level++;
+            playTone(1200,.3);
+          }
+        }
+      });
+
+      // Move hazards
+      state.hazards.forEach((h,i)=>{
+        const x=parseFloat(h.style.left)+parseFloat(h.dataset.vx);
+        const y=parseFloat(h.style.top)+parseFloat(h.dataset.vy);
+        h.style.left=x+'px';
+        h.style.top=y+'px';
+        if(x<-50||x>innerWidth+50||y<-50||y>innerHeight+50) h.remove(), state.hazards.splice(i,1);
+        if(!state.shield && dist(state.dragon,{x:x+12,y:y+12})<20){
+          h.remove();
+          state.hazards.splice(i,1);
+          state.health--;
+          playTone(200,.3);
+          dragon.style.filter='brightness(2) hue-rotate(90deg)';
+          setTimeout(()=>dragon.style.filter='',200);
+        }
+      });
+
+      // Powerups
+      state.powerups.forEach((p,i)=>{
+        if(dist(state.dragon,{x:parseFloat(p.style.left)+13,y:parseFloat(p.style.top)+13})<20){
+          p.remove();
+          state.powerups.splice(i,1);
+          const type=Math.random()<.33?'shield':Math.random()<.66?'magnet':'mega';
+          state[type]=true;
+          setTimeout(()=>state[type]=false,5000);
+          playTone(600,.3);
+        }
+      });
+
+      // Magnet
+      if(state.magnet){
+        state.gems.forEach(g=>{
+          const gx=parseFloat(g.style.left)+10;
+          const gy=parseFloat(g.style.top)+10;
+          const dx=state.dragon.x-gx;
+          const dy=state.dragon.y-gy;
+          const len=Math.hypot(dx,dy);
+          if(len<150){
+            g.dataset.vx=(dx/len)*3;
+            g.dataset.vy=(dy/len)*3;
+          }
+        });
+      }
+
+      // Update HUD
+      scoreEl.textContent=state.score;
+      healthEl.textContent='❤️'.repeat(state.health)+'💔'.repeat(3-state.health);
+      levelEl.textContent=state.level;
+
+      // Game over
+      if(state.health<=0){
+        pauseEl.innerHTML=`GAME OVER<br>Score: ${state.score}<br><small>Click to restart</small>`;
+        pauseEl.style.display='grid';
+        state.paused=true;
+      }
+
+      requestAnimationFrame(update);
+    };
+
+    // --- EVENTS ---
+    window.addEventListener('mousemove',e=>{
+      state.mouse.x=e.clientX;
+      state.mouse.y=e.clientY;
+    });
+    window.addEventListener('touchmove',e=>{
+      state.mouse.x=e.touches[0].clientX;
+      state.mouse.y=e.touches[0].clientY;
+    });
+    window.addEventListener('keydown',e=>{
+      if(e.code==='Escape'||e.code==='KeyP'){
+        state.paused=!state.paused;
+        pauseEl.style.display=state.paused?'grid':'none';
+      }
+    });
+    pauseEl.addEventListener('click',()=>{
+      state={...state,score:0,health:3,level:1,paused:false};
+      [...state.gems,...state.hazards,...state.powerups].forEach(el=>el.remove());
+      state.gems=[];state.hazards=[];state.powerups=[];
+      pauseEl.style.display='none';
+    });
+
+    // --- START ---
+    setInterval(spawnGem,config.gemInterval);
+    setInterval(spawnHazard,config.hazardInterval);
+    setInterval(spawnPowerup,config.powerupInterval);
+    update();
+  </script>
+</body>
+</html>
